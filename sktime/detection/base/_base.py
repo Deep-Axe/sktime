@@ -34,6 +34,7 @@ from sktime.datatypes import check_is_error_msg, check_is_scitype, convert
 from sktime.utils.adapters._safe_call import _method_has_arg
 from sktime.utils.multiindex import flatten_multiindex
 from sktime.utils.validation.series import check_series
+from sktime.utils.warnings import warn
 
 
 class BaseDetector(_PretrainMixin, BaseEstimator):
@@ -90,6 +91,29 @@ class BaseDetector(_PretrainMixin, BaseEstimator):
         "distribution_type": "None",
         "X_inner_mtype": "pd.DataFrame",
         "fit_is_empty": False,
+    }
+
+    # configs and default config values
+    # see set_config documentation for details
+    _config = {
+        "remember_data": True,  # whether to remember data in fit - self._X, self._y
+    }
+
+    _config_doc = {
+        "remember_data": """
+        remember_data : bool, default=True
+            whether self._X and self._y are stored in fit, and updated
+            in update. If True, self._X and self._y are stored and updated.
+            If False, self._X and self._y are not stored and updated,
+            and any data stored by an earlier fit is removed on fit.
+            This reduces serialization size when using save,
+            but the default ``update`` of detectors without native update
+            capability will not refit to all data seen, and will warn.
+            Data that was not stored cannot be recovered: if the config is
+            changed from False to True after fit, only data passed to later
+            ``update`` calls is stored, so the config should be set before fit.
+            The config applies to this object only, not to component detectors.
+        """,
     }
 
     def __init__(self):
@@ -290,8 +314,27 @@ class BaseDetector(_PretrainMixin, BaseEstimator):
             self._is_fitted = True
             return self
 
-        self._X = X
-        self._y = y
+        # if remember_data config is set, store _X and _y,
+        # otherwise remove data that may be stored from an earlier fit
+        if self.get_config()["remember_data"]:
+            # todo 1.4.0: change default of remember_data to False,
+            # and remove this warning
+            warn(
+                "The default of config ``remember_data`` of detectors will change "
+                "from ``True`` to ``False`` in sktime 1.4.0. With ``False``, "
+                "``fit`` and ``update`` do not store data in ``_X`` and ``_y``, "
+                "and ``update`` of detectors without native update capability, "
+                "i.e., with the capability:update tag not True, "
+                "does not refit to all data seen. "
+                "To silence this warning and adopt the new default early, "
+                "set ``remember_data=False`` via ``set_config`` before ``fit``.",
+                FutureWarning,
+            )
+            self._X = X
+            self._y = y
+        else:
+            self._X = None
+            self._y = None
 
         if _method_has_arg(self._fit, "y"):
             self._fit(X=X_inner, y=y)  # X_inner is the converted X
@@ -443,6 +486,9 @@ class BaseDetector(_PretrainMixin, BaseEstimator):
         Notes
         -----
         Updates fitted model that updates attributes ending in "_".
+
+        If the config ``remember_data`` is True, ``X`` and ``y`` are also added
+        to the data stored in ``self._X`` and ``self._y``.
         """
         self.check_is_fitted()
 
@@ -452,10 +498,16 @@ class BaseDetector(_PretrainMixin, BaseEstimator):
         if self.get_tag("fit_is_empty", False):
             return self
 
-        self._X = X_inner.combine_first(self._X)
+        # if remember_data config is set, update stored _X and _y
+        if self.get_config()["remember_data"]:
+            # _X can be None if fit was called with remember_data=False
+            if getattr(self, "_X", None) is None:
+                self._X = X_inner
+            else:
+                self._X = X_inner.combine_first(self._X)
 
-        if y is not None:
-            self._y = y.combine_first(self._y)
+            if y is not None:
+                self._y = y.combine_first(self._y)
 
         if _method_has_arg(self._update, "y"):
             self._update(X=X_inner, y=y)
@@ -981,9 +1033,24 @@ class BaseDetector(_PretrainMixin, BaseEstimator):
         Notes
         -----
         Updates fitted model that updates attributes ending in "_".
+
+        The default refits to all data stored in ``self._X`` and ``self._y``,
+        if the config ``remember_data`` is True. If it is False, no data is
+        stored, and the default leaves the model unchanged and warns.
         """
-        # default/fallback: re-fit to all data
-        self._fit(self._X, self._y)
+        # default/fallback: re-fit to all data, if remember_data config is set
+        if self.get_config()["remember_data"]:
+            self._fit(self._X, self._y)
+        else:
+            warn(
+                f"NotImplementedWarning: {type(self).__name__} "
+                "does not have a custom `update` method implemented, "
+                "and ``remember_data=False``, so `update` "
+                "leaves model parameters unchanged. "
+                "To store all data seen and refit to it on every update, set "
+                "``remember_data=True`` via ``set_config`` before ``fit``.",
+                obj=self,
+            )
 
         return self
 
@@ -1412,3 +1479,6 @@ class BaseDetector(_PretrainMixin, BaseEstimator):
             return BaseDetector._empty_sparse()
         change_points = y_sparse.set_index("ilocs").index.left
         return change_points
+
+
+BaseDetector._init_dynamic_doc()

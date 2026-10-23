@@ -137,6 +137,26 @@ class TestAllDetectors(DetectorFixtureGenerator, QuickTester):
         y_pred = object_instance.predict_segments(X_test)
         assert _is_valid_detection(y_pred, type="segments"), y_pred
 
+    @pytest.mark.parametrize("remember_data", [True, False])
+    def test_fit_update_remember_data(self, object_instance, remember_data):
+        """Test fit, update and predict, with both values of remember_data."""
+        estimator = object_instance.set_config(remember_data=remember_data)
+
+        # DataFrame with continuing index, so update appends to the data seen in fit
+        X = make_detection_problem(
+            n_timepoints=60, estimator_type=estimator.get_tag("distribution_type")
+        ).to_frame()
+        X_fit, X_new = X.iloc[:50], X.iloc[50:]
+
+        estimator.fit(X_fit)
+        estimator.update(X_new)
+
+        if not remember_data:
+            assert getattr(estimator, "_X", None) is None
+
+        y_pred = estimator.predict(X_new)
+        assert isinstance(y_pred, pd.DataFrame)
+
     def test_pretrain_then_fit_predict(self, object_instance):
         """Test pretrain can be called, and fit and predict work after it."""
         estimator = object_instance
